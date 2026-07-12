@@ -4,6 +4,22 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 /* ── Types ── */
+interface ColumnSchema {
+  name: string;
+  type: string;
+  pk?: boolean;
+  fk?: string;
+  nullable?: boolean;
+  default?: string;
+  comment: string;
+}
+
+interface TableSchema {
+  name: string;
+  comment: string;
+  columns: ColumnSchema[];
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -24,6 +40,58 @@ interface ConversationRow {
   updatedAt: string;
 }
 
+/* ── Schema Panel ── */
+function SchemaPanel({ tables }: { tables: TableSchema[] }) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+      {tables.map((table) => (
+        <div key={table.name} className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+          {/* Table header */}
+          <div className="px-4 py-3 border-b border-white/10 bg-white/[0.02]">
+            <div className="flex items-center gap-2">
+              <code className="text-sm font-semibold text-blue-300">{table.name}</code>
+              <span className="text-xs text-gray-500">— {table.comment}</span>
+            </div>
+          </div>
+
+          {/* Columns */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-white/5 text-gray-500">
+                  <th className="text-left py-2 px-4 font-medium w-40">字段名</th>
+                  <th className="text-left py-2 px-3 font-medium w-24">类型</th>
+                  <th className="text-left py-2 px-3 font-medium w-20">约束</th>
+                  <th className="text-left py-2 px-3 font-medium">说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                {table.columns.map((col) => (
+                  <tr key={col.name} className="border-b border-white/[0.03] hover:bg-white/[0.02]">
+                    <td className="py-2 px-4">
+                      <code className="text-gray-200 font-mono">{col.name}</code>
+                    </td>
+                    <td className="py-2 px-3 text-gray-400 font-mono">{col.type}</td>
+                    <td className="py-2 px-3">
+                      <div className="flex flex-wrap gap-1">
+                        {col.pk && <span className="text-yellow-500 text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10">PK</span>}
+                        {col.fk && <span className="text-purple-400 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10">FK→{col.fk}</span>}
+                        {col.nullable && <span className="text-gray-600 text-[10px]">NULL</span>}
+                        {col.default && <span className="text-green-600 text-[10px]">DEFAULT {col.default}</span>}
+                      </div>
+                    </td>
+                    <td className="py-2 px-3 text-gray-500">{col.comment}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ── Markdown Modal ── */
 function MarkdownModal({ message, onClose }: { message: Message | null; onClose: () => void }) {
   if (!message) return null;
@@ -37,7 +105,6 @@ function MarkdownModal({ message, onClose }: { message: Message | null; onClose:
         className="bg-[#1a1a2e] border border-white/10 rounded-2xl w-[700px] max-h-[80vh] flex flex-col shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Modal header */}
         <div className="flex-shrink-0 flex items-center justify-between px-5 py-4 border-b border-white/10">
           <div>
             <span className={`text-xs font-medium px-2 py-0.5 rounded ${message.role === 'user' ? 'bg-blue-500/20 text-blue-300' : 'bg-green-500/20 text-green-300'}`}>
@@ -55,17 +122,14 @@ function MarkdownModal({ message, onClose }: { message: Message | null; onClose:
           <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">&times;</button>
         </div>
 
-        {/* Modal body: content tabs */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {/* Content */}
           <div>
             <h4 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wide">Content</h4>
-            <div className="prose prose-invert prose-sm max-w-none markdown-content bg-black/20 rounded-lg p-4 border border-white/5">
+            <div className="markdown-content bg-black/20 rounded-lg p-4 border border-white/5">
               <pre className="whitespace-pre-wrap text-sm leading-relaxed">{message.content || '(empty)'}</pre>
             </div>
           </div>
 
-          {/* Thinking chain */}
           {message.thinkingChain && (
             <div>
               <h4 className="text-xs font-medium text-purple-400 mb-2 uppercase tracking-wide">Thinking Chain</h4>
@@ -75,7 +139,6 @@ function MarkdownModal({ message, onClose }: { message: Message | null; onClose:
             </div>
           )}
 
-          {/* Metadata */}
           <div className="text-xs text-gray-600 space-y-1 pt-2 border-t border-white/5">
             <p>ID: <code className="text-gray-400">{message.id}</code></p>
             <p>Conversation: <code className="text-gray-400">{message.conversationId}</code></p>
@@ -211,7 +274,6 @@ function MessagesTable({ onSelectMessage }: { onSelectMessage: (m: Message) => v
         </table>
       </div>
 
-      {/* Pagination */}
       <div className="flex items-center justify-between mt-3">
         <p className="text-xs text-gray-600">共 {data.total} 条消息</p>
         <div className="flex gap-2">
@@ -238,8 +300,15 @@ function MessagesTable({ onSelectMessage }: { onSelectMessage: (m: Message) => v
 
 /* ── Admin Page ── */
 export default function AdminPage() {
+  const [schema, setSchema] = useState<TableSchema[] | null>(null);
   const [tab, setTab] = useState<'conversations' | 'messages'>('conversations');
   const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+
+  useEffect(() => {
+    fetch('http://localhost:3001/admin/schema')
+      .then((r) => r.json())
+      .then((data) => setSchema(data.tables));
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#0f0f0f] text-gray-200">
@@ -248,8 +317,17 @@ export default function AdminPage() {
         <div className="flex items-center gap-4">
           <Link href="/" className="text-xs text-gray-500 hover:text-gray-300 transition-colors">← 返回</Link>
           <h1 className="text-base font-semibold text-white">管理后台</h1>
+          <span className="text-xs text-gray-600">— 数据库可视化</span>
         </div>
       </header>
+
+      {/* Schema section */}
+      {schema && (
+        <div className="px-6 py-5 border-b border-white/5">
+          <h2 className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">表结构设计</h2>
+          <SchemaPanel tables={schema} />
+        </div>
+      )}
 
       {/* Tab bar */}
       <div className="border-b border-white/10 px-6 flex gap-4">
@@ -259,7 +337,7 @@ export default function AdminPage() {
             tab === 'conversations' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
           }`}
         >
-          对话列表
+          conversation 表
         </button>
         <button
           onClick={() => setTab('messages')}
@@ -267,16 +345,15 @@ export default function AdminPage() {
             tab === 'messages' ? 'border-blue-500 text-white' : 'border-transparent text-gray-500 hover:text-gray-300'
           }`}
         >
-          消息列表
+          message 表
         </button>
       </div>
 
-      {/* Content */}
+      {/* Data content */}
       <main className="px-6 py-6">
         {tab === 'conversations' ? <ConversationsTable /> : <MessagesTable onSelectMessage={setSelectedMessage} />}
       </main>
 
-      {/* Markdown Modal */}
       <MarkdownModal message={selectedMessage} onClose={() => setSelectedMessage(null)} />
     </div>
   );

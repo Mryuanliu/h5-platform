@@ -5,6 +5,39 @@ import { ConversationService } from '../conversation/conversation.service';
 export class AdminController {
   constructor(private readonly conversation: ConversationService) {}
 
+  /** 数据表结构 */
+  @Get('schema')
+  getSchema() {
+    return {
+      tables: [
+        {
+          name: 'conversation',
+          comment: '对话/任务',
+          columns: [
+            { name: 'id', type: 'UUID', pk: true, comment: '主键' },
+            { name: 'title', type: 'varchar', comment: '对话标题（首条消息截取）' },
+            { name: 'sdkSessionId', type: 'varchar', nullable: true, comment: 'Claude SDK session UUID，用于 resume' },
+            { name: 'status', type: 'varchar', default: 'active', comment: '任务状态：active / archived' },
+            { name: 'createdAt', type: 'datetime', comment: '创建时间' },
+            { name: 'updatedAt', type: 'datetime', comment: '最后更新时间' },
+          ],
+        },
+        {
+          name: 'message',
+          comment: '消息',
+          columns: [
+            { name: 'id', type: 'UUID', pk: true, comment: '主键' },
+            { name: 'role', type: 'varchar', comment: '角色：user / assistant' },
+            { name: 'content', type: 'text', comment: '消息正文' },
+            { name: 'thinkingChain', type: 'text', nullable: true, comment: 'DeepSeek 思考链（reasoning_content）' },
+            { name: 'conversationId', type: 'UUID', fk: 'conversation.id', comment: '所属对话' },
+            { name: 'createdAt', type: 'datetime', comment: '创建时间' },
+          ],
+        },
+      ],
+    };
+  }
+
   /** 对话列表（含消息数） */
   @Get('conversations')
   async listConversations(
