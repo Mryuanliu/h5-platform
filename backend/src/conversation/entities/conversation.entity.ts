@@ -16,6 +16,14 @@ export class Conversation {
   @Column({ default: '新对话' })
   title: string;
 
+  /** SDK session ID for resume support */
+  @Column({ nullable: true })
+  sdkSessionId: string;
+
+  /** Task status: active / archived */
+  @Column({ default: 'active' })
+  status: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

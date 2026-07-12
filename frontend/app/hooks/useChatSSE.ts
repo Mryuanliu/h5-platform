@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 
 export interface ChatMessage {
   id?: string;
@@ -9,19 +9,28 @@ export interface ChatMessage {
   thinkingChain?: string;
 }
 
-export function useChatSSE() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+/**
+ * SSE hook for the agent run endpoint.
+ * Supports loading initial messages from DB and session resume.
+ */
+export function useChatSSE(initialMessages?: ChatMessage[]) {
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages || []);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [ttfb, setTtfb] = useState<number | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [sdkSessionId, setSdkSessionId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Load initial messages
+  useEffect(() => {
+    if (initialMessages && initialMessages.length > 0) {
+      setMessages(initialMessages);
+    }
+  }, [initialMessages]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || isStreaming) return;
 
-    // Add user message
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
-
-    // Add placeholder assistant message (will be updated via SSE)
     setMessages((prev) => [...prev, { role: 'assistant', content: '', thinkingChain: '' }]);
     setIsStreaming(true);
 
@@ -32,11 +41,14 @@ export function useChatSSE() {
     let fullThinking = '';
 
     try {
-      // Call the SDK full chain: query() → proxy → DeepSeek
       const res = await fetch('http://localhost:3001/agent/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text }),
+        body: JSON.stringify({
+          prompt: text,
+          conversationId,
+          resumeSessionId: sdkSessionId,
+        }),
         signal: abortCtrl.signal,
       });
 
@@ -72,12 +84,10 @@ export function useChatSSE() {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-
           if (trimmed.startsWith('event: ')) {
             lastEvent = trimmed.slice(7);
             continue;
           }
-
           if (trimmed.startsWith('data: ')) {
             const payload = trimmed.slice(6);
             let data: Record<string, any>;
@@ -85,38 +95,27 @@ export function useChatSSE() {
 
             switch (lastEvent) {
               case 'meta':
-                if (data.ttfbMs != null) setTtfb(data.ttfbMs);
+                if (data.conversationId) setConversationId(data.conversationId);
+                if (data.sdkSessionId) setSdkSessionId(data.sdkSessionId);
                 if (data.messageId) {
                   updateLastAssistant((msg) => ({ ...msg, id: data.messageId }));
                 }
                 break;
-
               case 'thinking':
                 fullThinking += data.content || '';
-                updateLastAssistant((msg) => ({
-                  ...msg,
-                  thinkingChain: fullThinking,
-                }));
+                updateLastAssistant((msg) => ({ ...msg, thinkingChain: fullThinking }));
                 break;
-
               case 'text':
                 fullContent += data.content || '';
                 updateLastAssistant((msg) => ({
-                  ...msg,
-                  content: fullContent,
-                  thinkingChain: fullThinking,
+                  ...msg, content: fullContent, thinkingChain: fullThinking,
                 }));
                 break;
-
               case 'done':
-                // Final update with complete content
                 updateLastAssistant((msg) => ({
-                  ...msg,
-                  content: fullContent,
-                  thinkingChain: fullThinking,
+                  ...msg, content: fullContent, thinkingChain: fullThinking,
                 }));
                 break;
-
               case 'error':
                 throw new Error(data.message || 'SSE error');
             }
@@ -125,7 +124,6 @@ export function useChatSSE() {
       }
     } catch (err: any) {
       if (err.name === 'AbortError') return;
-      console.error('Chat SSE error:', err);
       setMessages((prev) => {
         const arr = [...prev];
         const last = arr[arr.length - 1];
@@ -138,7 +136,7 @@ export function useChatSSE() {
       setIsStreaming(false);
       abortRef.current = null;
     }
-  }, [isStreaming]);
+  }, [conversationId, sdkSessionId, isStreaming]);
 
-  return { messages, isStreaming, sendMessage, ttfb };
+  return { messages, isStreaming, sendMessage, conversationId, setMessages };
 }

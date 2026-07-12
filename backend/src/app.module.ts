@@ -4,6 +4,7 @@ import { DatabaseModule } from './database/database.module';
 import { ConversationModule } from './conversation/conversation.module';
 import { ChatModule } from './chat/chat.module';
 import { AgentSdkModule } from './agent-sdk/agent-sdk.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { AgentSdkModule } from './agent-sdk/agent-sdk.module';
     ConversationModule,
     ChatModule,
     AgentSdkModule,
+    AdminModule,
   ],
 })
 export class AppModule {}

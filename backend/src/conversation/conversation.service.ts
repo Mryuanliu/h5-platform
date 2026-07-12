@@ -65,10 +65,7 @@ export class ConversationService {
       conversationId,
     });
     const saved = await this.msgRepo.save(msg);
-
-    // Update conversation timestamp
     await this.convRepo.update(conversationId, { updatedAt: new Date() });
-
     return saved;
   }
 
@@ -87,5 +84,55 @@ export class ConversationService {
       where: { conversationId },
       order: { createdAt: 'ASC' },
     });
+  }
+
+  /** Save the SDK session ID after first agent run. */
+  async updateSdkSessionId(conversationId: string, sdkSessionId: string): Promise<void> {
+    await this.convRepo.update(conversationId, { sdkSessionId });
+  }
+
+  // ── Admin queries ──
+
+  /** List all conversations for admin, with message count. */
+  async adminListConversations(page = 1, limit = 50): Promise<{ rows: any[]; total: number }> {
+    const [rows, total] = await this.convRepo.findAndCount({
+      skip: (page - 1) * limit,
+      take: limit,
+      order: { updatedAt: 'DESC' },
+    });
+    // Attach message count per conversation
+    const enriched = await Promise.all(
+      rows.map(async (c) => ({
+        ...c,
+        messageCount: await this.msgRepo.count({ where: { conversationId: c.id } }),
+      })),
+    );
+    return { rows: enriched, total };
+  }
+
+  /** List all messages for admin. */
+  async adminListMessages(page = 1, limit = 100): Promise<{ rows: Message[]; total: number }> {
+    const [rows, total] = await this.msgRepo.findAndCount({
+      skip: (page - 1) * limit,
+      take: limit,
+      order: { createdAt: 'DESC' },
+      relations: ['conversation'],
+    });
+    return { rows, total };
+  }
+
+  /** Get a single message detail. */
+  async adminGetMessage(id: string): Promise<Message> {
+    const msg = await this.msgRepo.findOne({
+      where: { id },
+      relations: ['conversation'],
+    });
+    if (!msg) throw new NotFoundException(`Message ${id} not found`);
+    return msg;
+  }
+
+  /** Delete a conversation. */
+  async delete(id: string): Promise<void> {
+    await this.convRepo.delete(id);
   }
 }

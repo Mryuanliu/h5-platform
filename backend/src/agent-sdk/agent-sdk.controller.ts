@@ -8,19 +8,14 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { AgentSdkService } from './agent-sdk.service';
+import { ConversationService } from '../conversation/conversation.service';
 
-/**
- * Test endpoint for the @anthropic-ai/claude-agent-sdk integration.
- *
- * This endpoint calls query() from the SDK, which:
- * 1. Spawns the Claude CLI subprocess
- * 2. CLI calls ANTHROPIC_BASE_URL (→ our proxy at localhost:3001)
- * 3. Proxy converts Anthropic → OpenAI format → DeepSeek
- * 4. Response flows back through the full chain
- */
 @Controller('agent')
 export class AgentSdkController {
-  constructor(private readonly agentSdk: AgentSdkService) {}
+  constructor(
+    private readonly agentSdk: AgentSdkService,
+    private readonly conversation: ConversationService,
+  ) {}
 
   @Post('run')
   @HttpCode(200)
@@ -29,7 +24,11 @@ export class AgentSdkController {
   @Header('Connection', 'keep-alive')
   @Header('X-Accel-Buffering', 'no')
   async run(
-    @Body() body: { prompt: string },
+    @Body() body: {
+      prompt: string;
+      conversationId?: string;      // our DB conv ID
+      resumeSessionId?: string;     // SDK session ID for resume
+    },
     @Res() res: Response,
   ) {
     if (!body.prompt || !body.prompt.trim()) {
@@ -42,34 +41,49 @@ export class AgentSdkController {
     };
 
     try {
-      // Save start time for TTFB measurement
-      const startTime = Date.now();
-      let hasSentFirstToken = false;
+      // ── 1. Load or create conversation ──
+      let convId = body.conversationId;
+      let resumeSid = body.resumeSessionId;
 
-      // Run the agent through the full SDK → Proxy → DeepSeek chain
-      for await (const chunk of this.agentSdk.run(body.prompt)) {
-        if (!hasSentFirstToken) {
-          hasSentFirstToken = true;
-          sendSSE('meta', { ttfbMs: Date.now() - startTime });
-        }
+      if (convId) {
+        // Existing conversation: add user message to DB
+        await this.conversation.addMessage(convId, 'user', body.prompt);
+      } else {
+        // New conversation: create in DB
+        const conv = await this.conversation.create(body.prompt);
+        convId = conv.id;
+      }
 
+      // Create placeholder assistant message
+      const assistantMsg = await this.conversation.addMessage(convId, 'assistant', '');
+      sendSSE('meta', { conversationId: convId, messageId: assistantMsg.id });
+
+      // ── 2. Run agent with resume support ──
+      let fullContent = '';
+      let fullThinking = '';
+
+      for await (const chunk of this.agentSdk.run(body.prompt, resumeSid)) {
         switch (chunk.type) {
+          case 'session':
+            // Save the SDK session ID for future resume
+            if (chunk.sessionId && convId) {
+              await this.conversation.updateSdkSessionId(convId, chunk.sessionId);
+              sendSSE('meta', { conversationId: convId, messageId: assistantMsg.id, sdkSessionId: chunk.sessionId });
+            }
+            break;
           case 'thinking':
+            fullThinking += chunk.content || '';
             sendSSE('thinking', { content: chunk.content });
             break;
           case 'text':
+            fullContent += chunk.content || '';
             sendSSE('text', { content: chunk.content });
             break;
           case 'done':
-            sendSSE('done', { usage: chunk.usage });
+            await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking);
+            sendSSE('done', { messageId: assistantMsg.id, usage: chunk.usage });
             break;
         }
-      }
-
-      if (!hasSentFirstToken) {
-        // No streaming happened — send a minimal done
-        sendSSE('meta', { ttfbMs: 0 });
-        sendSSE('done', { usage: null });
       }
 
       res.end();
@@ -79,9 +93,7 @@ export class AgentSdkController {
         res.status(500).json({ error: error.message || 'Agent SDK error' });
         return;
       }
-      try {
-        sendSSE('error', { message: error.message });
-      } catch { /* closed */ }
+      try { sendSSE('error', { message: error.message }); } catch { /* closed */ }
       res.end();
     }
   }
