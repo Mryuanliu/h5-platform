@@ -13,19 +13,23 @@ export interface ChatMessage {
  * SSE hook for the agent run endpoint.
  * Supports loading initial messages from DB and session resume.
  */
-export function useChatSSE(initialMessages?: ChatMessage[]) {
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages || []);
+export function useChatSSE(opts?: {
+  initialMessages?: ChatMessage[];
+  initialConversationId?: string;
+  initialSdkSessionId?: string;
+}) {
+  const [messages, setMessages] = useState<ChatMessage[]>(opts?.initialMessages || []);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [sdkSessionId, setSdkSessionId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(opts?.initialConversationId || null);
+  const [sdkSessionId, setSdkSessionId] = useState<string | null>(opts?.initialSdkSessionId || null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Load initial messages
+  // Sync when opts change (e.g. historical conversation loaded)
   useEffect(() => {
-    if (initialMessages && initialMessages.length > 0) {
-      setMessages(initialMessages);
-    }
-  }, [initialMessages]);
+    if (opts?.initialMessages) setMessages(opts.initialMessages);
+    if (opts?.initialConversationId) setConversationId(opts.initialConversationId);
+    if (opts?.initialSdkSessionId) setSdkSessionId(opts.initialSdkSessionId);
+  }, [opts?.initialMessages, opts?.initialConversationId, opts?.initialSdkSessionId]);
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || isStreaming) return;

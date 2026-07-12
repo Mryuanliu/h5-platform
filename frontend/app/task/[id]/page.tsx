@@ -7,8 +7,12 @@ import { useChatSSE, ChatMessage } from '../../hooks/useChatSSE';
 import ChatMessageComponent from '../../components/ChatMessage';
 import PreviewPanel from '../../components/PreviewPanel';
 
-function TaskChat({ convId, initialMsgs }: { convId?: string; initialMsgs?: ChatMessage[] }) {
-  const { messages, isStreaming, sendMessage } = useChatSSE(initialMsgs);
+function TaskChat({ convId, initialMsgs, sdkSessionId }: { convId?: string; initialMsgs?: ChatMessage[]; sdkSessionId?: string }) {
+  const { messages, isStreaming, sendMessage } = useChatSSE({
+    initialMessages: initialMsgs,
+    initialConversationId: convId,
+    initialSdkSessionId: sdkSessionId,
+  });
   const [input, setInput] = useState('');
   const [previewHtml, setPreviewHtml] = useState<string | undefined>();
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
@@ -106,7 +110,11 @@ export default function TaskPage() {
   const convId = params?.id as string;
   const isNew = convId === 'new';
   const [loading, setLoading] = useState(true);
-  const [initialMsgs, setInitialMsgs] = useState<ChatMessage[] | undefined>();
+  const [initialData, setInitialData] = useState<{
+    msgs: ChatMessage[];
+    convId: string;
+    sdkSessionId?: string;
+  } | undefined>();
 
   useEffect(() => {
     if (isNew) {
@@ -122,7 +130,7 @@ export default function TaskPage() {
           content: m.content,
           thinkingChain: m.thinkingChain || undefined,
         }));
-        setInitialMsgs(msgs);
+        setInitialData({ msgs, convId: data.id, sdkSessionId: data.sdkSessionId || undefined });
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -136,5 +144,11 @@ export default function TaskPage() {
     );
   }
 
-  return <TaskChat convId={isNew ? undefined : convId} initialMsgs={isNew ? undefined : initialMsgs} />;
+  return (
+    <TaskChat
+      convId={isNew ? undefined : (initialData?.convId || convId)}
+      initialMsgs={isNew ? undefined : initialData?.msgs}
+      sdkSessionId={isNew ? undefined : initialData?.sdkSessionId}
+    />
+  );
 }
