@@ -1,0 +1,17 @@
+import { Module } from '@nestjs/common';
+import { ProxyModule } from './proxy/proxy.module';
+import { DatabaseModule } from './database/database.module';
+import { ConversationModule } from './conversation/conversation.module';
+import { ChatModule } from './chat/chat.module';
+import { AgentSdkModule } from './agent-sdk/agent-sdk.module';
+
+@Module({
+  imports: [
+    ProxyModule,
+    DatabaseModule,
+    ConversationModule,
+    ChatModule,
+    AgentSdkModule,
+  ],
+})
+export class AppModule {}
