@@ -90,11 +90,16 @@ export class AgentSdkController {
             });
             break;
           case 'tool_end':
-            sendSSE('tool_end', {
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolResult: chunk.toolResult,
-            });
+            sendSSE('tool_end', { toolName: chunk.toolName, toolId: chunk.toolId, toolResult: chunk.toolResult });
+            break;
+          case 'tool_progress':
+            sendSSE('tool_progress', { toolName: chunk.toolName, toolId: chunk.toolId, status: chunk.subtype });
+            break;
+          case 'status':
+            sendSSE('status', { content: chunk.content, subtype: chunk.subtype });
+            break;
+          case 'command_output':
+            sendSSE('command_output', { content: chunk.content });
             break;
           case 'done':
             await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking);

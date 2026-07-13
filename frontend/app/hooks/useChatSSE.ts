@@ -8,17 +8,30 @@ export interface ToolCall {
   toolInput?: any;
 }
 
+/** Chronological event in the assistant's response */
+export interface EventLog {
+  type: 'thinking' | 'tool_start' | 'tool_progress' | 'status' | 'command_output' | 'text_chunk';
+  content?: string;
+  toolName?: string;
+  toolId?: string;
+  toolInput?: any;
+  subtype?: string;
+}
+
 export interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant';
+  /** Final assembled text content */
   content: string;
+  /** Full thinking chain (for collapsible display) */
   thinkingChain?: string;
-  tools?: ToolCall[];
+  /** Chronological event log */
+  events?: EventLog[];
 }
 
 /**
  * SSE hook for the agent run endpoint.
- * Supports loading initial messages from DB and session resume.
+ * Accumulates events into a chronological log on the assistant message.
  */
 export function useChatSSE(opts?: {
   initialMessages?: ChatMessage[];
@@ -31,18 +44,41 @@ export function useChatSSE(opts?: {
   const [sdkSessionId, setSdkSessionId] = useState<string | null>(opts?.initialSdkSessionId || null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Sync when opts change (e.g. historical conversation loaded)
+  // Sync when opts change (historical conversation loaded)
   useEffect(() => {
     if (opts?.initialMessages) setMessages(opts.initialMessages);
     if (opts?.initialConversationId) setConversationId(opts.initialConversationId);
     if (opts?.initialSdkSessionId) setSdkSessionId(opts.initialSdkSessionId);
   }, [opts?.initialMessages, opts?.initialConversationId, opts?.initialSdkSessionId]);
 
+  const pushEvent = (ev: EventLog) => {
+    setMessages((prev) => {
+      const arr = [...prev];
+      const last = arr[arr.length - 1];
+      if (last?.role === 'assistant') {
+        arr[arr.length - 1] = {
+          ...last,
+          events: [...(last.events || []), ev],
+        };
+      }
+      return arr;
+    });
+  };
+
+  const updateLastAssistant = (updater: (msg: ChatMessage) => ChatMessage) => {
+    setMessages((prev) => {
+      const arr = [...prev];
+      const last = arr[arr.length - 1];
+      if (last?.role === 'assistant') arr[arr.length - 1] = updater(last);
+      return arr;
+    });
+  };
+
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || isStreaming) return;
 
     setMessages((prev) => [...prev, { role: 'user', content: text }]);
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', thinkingChain: '' }]);
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', events: [] }]);
     setIsStreaming(true);
 
     const abortCtrl = new AbortController();
@@ -55,11 +91,7 @@ export function useChatSSE(opts?: {
       const res = await fetch('http://localhost:3001/agent/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: text,
-          conversationId,
-          resumeSessionId: sdkSessionId,
-        }),
+        body: JSON.stringify({ prompt: text, conversationId, resumeSessionId: sdkSessionId }),
         signal: abortCtrl.signal,
       });
 
@@ -75,15 +107,6 @@ export function useChatSSE(opts?: {
       let buf = '';
       let lastEvent = '';
 
-      const updateLastAssistant = (updater: (msg: ChatMessage) => ChatMessage) => {
-        setMessages((prev) => {
-          const arr = [...prev];
-          const last = arr[arr.length - 1];
-          if (last?.role === 'assistant') arr[arr.length - 1] = updater(last);
-          return arr;
-        });
-      };
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -95,54 +118,54 @@ export function useChatSSE(opts?: {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          if (trimmed.startsWith('event: ')) {
-            lastEvent = trimmed.slice(7);
-            continue;
-          }
-          if (trimmed.startsWith('data: ')) {
-            const payload = trimmed.slice(6);
-            let data: Record<string, any>;
-            try { data = JSON.parse(payload); } catch { continue; }
+          if (trimmed.startsWith('event: ')) { lastEvent = trimmed.slice(7); continue; }
+          if (!trimmed.startsWith('data: ')) continue;
 
-            switch (lastEvent) {
-              case 'meta':
-                if (data.conversationId) setConversationId(data.conversationId);
-                if (data.sdkSessionId) setSdkSessionId(data.sdkSessionId);
-                if (data.messageId) {
-                  updateLastAssistant((msg) => ({ ...msg, id: data.messageId }));
-                }
-                break;
-              case 'thinking':
-                fullThinking += data.content || '';
-                updateLastAssistant((msg) => ({ ...msg, thinkingChain: fullThinking }));
-                break;
-              case 'text':
-                fullContent += data.content || '';
-                updateLastAssistant((msg) => ({
-                  ...msg, content: fullContent, thinkingChain: fullThinking,
-                }));
-                break;
-              case 'tool_start':
-                updateLastAssistant((msg) => ({
-                  ...msg,
-                  tools: [...(msg.tools || []), {
-                    toolName: data.toolName,
-                    toolId: data.toolId,
-                    toolInput: data.toolInput,
-                  }],
-                }));
-                break;
-              case 'tool_end':
-                // Could update tool status in the future
-                break;
-              case 'done':
-                updateLastAssistant((msg) => ({
-                  ...msg, content: fullContent, thinkingChain: fullThinking,
-                }));
-                break;
-              case 'error':
-                throw new Error(data.message || 'SSE error');
-            }
+          const payload = trimmed.slice(6);
+          let data: Record<string, any>;
+          try { data = JSON.parse(payload); } catch { continue; }
+
+          switch (lastEvent) {
+            case 'meta':
+              if (data.conversationId) setConversationId(data.conversationId);
+              if (data.sdkSessionId) setSdkSessionId(data.sdkSessionId);
+              if (data.messageId) updateLastAssistant((msg) => ({ ...msg, id: data.messageId }));
+              break;
+
+            case 'thinking':
+              fullThinking += data.content || '';
+              pushEvent({ type: 'thinking', content: data.content });
+              updateLastAssistant((msg) => ({ ...msg, thinkingChain: fullThinking }));
+              break;
+
+            case 'text':
+              fullContent += data.content || '';
+              pushEvent({ type: 'text_chunk', content: data.content });
+              updateLastAssistant((msg) => ({ ...msg, content: fullContent, thinkingChain: fullThinking }));
+              break;
+
+            case 'tool_start':
+              pushEvent({ type: 'tool_start', toolName: data.toolName, toolId: data.toolId, toolInput: data.toolInput });
+              break;
+
+            case 'tool_progress':
+              pushEvent({ type: 'tool_progress', toolName: data.toolName, toolId: data.toolId, subtype: data.status });
+              break;
+
+            case 'status':
+              pushEvent({ type: 'status', content: data.content, subtype: data.subtype });
+              break;
+
+            case 'command_output':
+              pushEvent({ type: 'command_output', content: data.content });
+              break;
+
+            case 'done':
+              updateLastAssistant((msg) => ({ ...msg, content: fullContent, thinkingChain: fullThinking }));
+              break;
+
+            case 'error':
+              throw new Error(data.message || 'SSE error');
           }
         }
       }
@@ -151,9 +174,7 @@ export function useChatSSE(opts?: {
       setMessages((prev) => {
         const arr = [...prev];
         const last = arr[arr.length - 1];
-        if (last?.role === 'assistant') {
-          arr[arr.length - 1] = { ...last, content: `❌ ${err.message}` };
-        }
+        if (last?.role === 'assistant') arr[arr.length - 1] = { ...last, content: `❌ ${err.message}` };
         return arr;
       });
     } finally {
