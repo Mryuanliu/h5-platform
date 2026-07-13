@@ -56,7 +56,11 @@ export class AgentSdkController {
 
       // Create placeholder assistant message
       const assistantMsg = await this.conversation.addMessage(convId, 'assistant', '');
-      sendSSE('meta', { conversationId: convId, messageId: assistantMsg.id });
+      sendSSE('meta', {
+        conversationId: convId,
+        messageId: assistantMsg.id,
+        outputDir: this.agentSdk.getOutputDir(),
+      });
 
       // ── 2. Run agent with resume support ──
       let fullContent = '';
@@ -65,7 +69,6 @@ export class AgentSdkController {
       for await (const chunk of this.agentSdk.run(body.prompt, resumeSid)) {
         switch (chunk.type) {
           case 'session':
-            // Save the SDK session ID for future resume
             if (chunk.sessionId && convId) {
               await this.conversation.updateSdkSessionId(convId, chunk.sessionId);
               sendSSE('meta', { conversationId: convId, messageId: assistantMsg.id, sdkSessionId: chunk.sessionId });
@@ -78,6 +81,20 @@ export class AgentSdkController {
           case 'text':
             fullContent += chunk.content || '';
             sendSSE('text', { content: chunk.content });
+            break;
+          case 'tool_start':
+            sendSSE('tool_start', {
+              toolName: chunk.toolName,
+              toolId: chunk.toolId,
+              toolInput: chunk.toolInput,
+            });
+            break;
+          case 'tool_end':
+            sendSSE('tool_end', {
+              toolName: chunk.toolName,
+              toolId: chunk.toolId,
+              toolResult: chunk.toolResult,
+            });
             break;
           case 'done':
             await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking);

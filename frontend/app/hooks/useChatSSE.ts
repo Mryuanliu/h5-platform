@@ -2,11 +2,18 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
+export interface ToolCall {
+  toolName: string;
+  toolId: string;
+  toolInput?: any;
+}
+
 export interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
   thinkingChain?: string;
+  tools?: ToolCall[];
 }
 
 /**
@@ -114,6 +121,19 @@ export function useChatSSE(opts?: {
                 updateLastAssistant((msg) => ({
                   ...msg, content: fullContent, thinkingChain: fullThinking,
                 }));
+                break;
+              case 'tool_start':
+                updateLastAssistant((msg) => ({
+                  ...msg,
+                  tools: [...(msg.tools || []), {
+                    toolName: data.toolName,
+                    toolId: data.toolId,
+                    toolInput: data.toolInput,
+                  }],
+                }));
+                break;
+              case 'tool_end':
+                // Could update tool status in the future
                 break;
               case 'done':
                 updateLastAssistant((msg) => ({
