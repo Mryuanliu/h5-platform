@@ -65,16 +65,7 @@ export class AgentSdkController {
       // ── 2. Run agent with resume support ──
       let fullContent = '';
       let fullThinking = '';
-      const events: any[] = []; // Accumulate events for DB persistence
-
-      // Helper: save events every N events to avoid losing on crash
-      let eventSaveCounter = 0;
-      const maybeSaveEvents = async () => {
-        eventSaveCounter++;
-        if (eventSaveCounter % 10 === 0) {
-          await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking, events);
-        }
-      };
+      const events: any[] = []; // Accumulate non-content events for DB persistence
 
       for await (const chunk of this.agentSdk.run(body.prompt, resumeSid)) {
         switch (chunk.type) {
@@ -86,15 +77,12 @@ export class AgentSdkController {
             break;
           case 'thinking':
             fullThinking += chunk.content || '';
-            events.push({ type: 'thinking', content: chunk.content });
             sendSSE('thinking', { content: chunk.content });
-            await maybeSaveEvents();
             break;
           case 'text':
             fullContent += chunk.content || '';
-            events.push({ type: 'text_chunk', content: chunk.content });
             sendSSE('text', { content: chunk.content });
-            await maybeSaveEvents();
+            break;
             break;
           case 'tool_start':
             events.push({ type: 'tool_start', toolName: chunk.toolName, toolId: chunk.toolId, toolInput: chunk.toolInput });
