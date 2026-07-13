@@ -130,10 +130,11 @@ export class AgentSdkService {
             continue;
           }
 
-          // ── Status updates ──
+          // ── Status updates (only if has text content) ──
           case 'system': {
             const sm = msg as any;
-            yield { type: 'status', content: typeof sm.text === 'string' ? sm.text : undefined, subtype: sm.subtype };
+            const text = typeof sm.text === 'string' ? sm.text : null;
+            if (text) yield { type: 'status', content: text, subtype: sm.subtype };
             continue;
           }
 
