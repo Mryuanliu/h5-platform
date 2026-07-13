@@ -10,7 +10,7 @@ export interface ToolCall {
 
 /** Chronological event in the assistant's response */
 export interface EventLog {
-  type: 'thinking' | 'tool_start' | 'tool_progress' | 'status' | 'command_output' | 'text_chunk';
+  type: 'thinking' | 'tool_start' | 'tool_update' | 'tool_progress' | 'status' | 'command_output' | 'text_chunk';
   content?: string;
   toolName?: string;
   toolId?: string;
@@ -146,6 +146,25 @@ export function useChatSSE(opts?: {
 
             case 'tool_start':
               pushEvent({ type: 'tool_start', toolName: data.toolName, toolId: data.toolId, toolInput: data.toolInput });
+              break;
+
+            case 'tool_update':
+              // Replace last tool_start's toolInput with final parsed input
+              setMessages((prev) => {
+                const arr = [...prev];
+                const last = arr[arr.length - 1];
+                if (last?.role === 'assistant' && last.events) {
+                  const evts = [...last.events];
+                  for (let i = evts.length - 1; i >= 0; i--) {
+                    if (evts[i].type === 'tool_start' && evts[i].toolId === data.toolId) {
+                      evts[i] = { ...evts[i], toolInput: data.toolInput };
+                      break;
+                    }
+                  }
+                  arr[arr.length - 1] = { ...last, events: evts };
+                }
+                return arr;
+              });
               break;
 
             case 'tool_progress':

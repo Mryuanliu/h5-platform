@@ -110,7 +110,15 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
       );
 
     case 'thinking':
-      return null; // Handled separately as typing animation
+      return (
+        <div className="flex gap-2 text-xs text-purple-300/60 py-0.5 pl-2.5">
+          <span className="flex-shrink-0 mt-0.5">🧠</span>
+          <span className="italic truncate hover:line-clamp-none transition-all">{ev.content}</span>
+        </div>
+      );
+
+    case 'tool_update':
+      return null; // Handled by updating tool_start's toolInput
 
     case 'text_chunk':
       return null; // Shown as final markdown content

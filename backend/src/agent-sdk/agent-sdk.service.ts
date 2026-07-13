@@ -4,21 +4,17 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 export interface AgentChunk {
-  type: 'session' | 'thinking' | 'text' | 'tool_start' | 'tool_end'
+  type: 'session' | 'thinking' | 'text' | 'tool_start' | 'tool_update' | 'tool_end'
        | 'tool_progress' | 'status' | 'command_output' | 'done';
   sessionId?: string;
   content?: string;
   toolName?: string;
   toolId?: string;
+  /** partial JSON for tool_update, full object for tool_end */
   toolInput?: any;
   toolResult?: string;
-  /** For status events (e.g. "File created at ...") */
   subtype?: string;
-  usage?: {
-    input_tokens: number;
-    output_tokens: number;
-    total_cost_usd?: number;
-  };
+  usage?: { input_tokens: number; output_tokens: number; total_cost_usd?: number };
 }
 
 @Injectable()
@@ -58,19 +54,11 @@ export class AgentSdkService {
         maxTurns: 20,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        // Sandbox requires `srt` binary: npm install -g @anthropic-ai/sandbox-runtime
-        // sandbox: {
-        //   enabled: true,
-        //   failIfUnavailable: false,
-        //   filesystem: { allowWrite: [this.outputDir], allowRead: ['/tmp', this.outputDir] },
-        //   network: { allowedDomains: ['api.deepseek.com', 'api.anthropic.com'] },
-        // },
         ...(resume ? { resume } : {}),
       },
     });
 
     try {
-      // Attempt resume; fall back to fresh session if session deleted
       const tryQuery = async (): Promise<Awaited<ReturnType<typeof makeQuery>>> => {
         try {
           return makeQuery(resumeSessionId);
@@ -85,6 +73,9 @@ export class AgentSdkService {
 
       const q = await tryQuery();
 
+      // Track current tool_use block for accumulating input_json_delta
+      let currentToolUse: { name: string; id: string; args: string } | null = null;
+
       for await (const msg of q) {
         // Capture session ID from any message
         if (!sdkSessionId) {
@@ -97,58 +88,62 @@ export class AgentSdkService {
 
         switch (msg.type) {
 
-          // ── Raw API streaming events (thinking, text, tool use) ──
+          // ── Raw API streaming events ──
           case 'stream_event': {
             const ev = (msg as any).event;
             if (!ev) continue;
 
+            // Tool_use block start
             if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
-              yield { type: 'tool_start', toolName: ev.content_block.name, toolId: ev.content_block.id, toolInput: ev.content_block.input || {} };
+              currentToolUse = { name: ev.content_block.name, id: ev.content_block.id, args: '' };
+              yield { type: 'tool_start', toolName: ev.content_block.name, toolId: ev.content_block.id, toolInput: {} };
               continue;
             }
 
+            // Tool_use block end → emit accumulated args as toolInput
+            if (ev.type === 'content_block_stop' && currentToolUse) {
+              let parsed: any = {};
+              try { parsed = JSON.parse(currentToolUse.args); } catch { parsed = {}; }
+              yield { type: 'tool_update', toolName: currentToolUse.name, toolId: currentToolUse.id, toolInput: parsed };
+              currentToolUse = null;
+              continue;
+            }
+
+            // Deltas
             if (ev.type === 'content_block_delta') {
               const d = ev.delta;
               if (d?.type === 'thinking_delta' && d.thinking) yield { type: 'thinking', content: d.thinking };
               if (d?.type === 'text_delta' && d.text) yield { type: 'text', content: d.text };
+              // Accumulate tool input arguments from streaming JSON
+              if (d?.type === 'input_json_delta' && currentToolUse) {
+                currentToolUse.args += d.partial_json || '';
+              }
               continue;
             }
-
-            // content_block_start for thinking/text are not emitted (we let deltas handle it)
-            // content_block_stop is ignored (no UI value)
             continue;
           }
 
-          // ── Tool execution progress (agent is running a tool) ──
+          // ── Tool progress ──
           case 'tool_progress': {
             const tp = msg as any;
             yield { type: 'tool_progress', toolName: tp.tool_name, toolId: tp.tool_use_id, subtype: tp.status || 'running' };
             continue;
           }
 
-          // ── Status updates (file written, command output, etc.) ──
+          // ── Status updates ──
           case 'system': {
             const sm = msg as any;
             yield { type: 'status', content: typeof sm.text === 'string' ? sm.text : undefined, subtype: sm.subtype };
             continue;
           }
 
-          // ── Complete assistant message (end of a turn) ──
-          case 'assistant': {
-            // Assistant messages containing tool_use blocks indicate a tool was called.
-            // The tool_result will come in subsequent messages.
-            // Just pass through — the deltas already carried the thinking/text.
-            continue;
-          }
-
-          // ── Final result ──
+          // ── Result ──
           case 'result': {
             const result = msg as any;
             yield { type: 'done', usage: { input_tokens: result.usage?.input_tokens ?? 0, output_tokens: result.usage?.output_tokens ?? 0, total_cost_usd: result.total_cost_usd } };
             continue;
           }
 
-          // ── Everything else (user messages, etc.) — forward as status ──
           default:
             continue;
         }

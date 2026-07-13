@@ -100,6 +100,11 @@ export class AgentSdkController {
             events.push({ type: 'tool_start', toolName: chunk.toolName, toolId: chunk.toolId, toolInput: chunk.toolInput });
             sendSSE('tool_start', { toolName: chunk.toolName, toolId: chunk.toolId, toolInput: chunk.toolInput });
             break;
+          case 'tool_update':
+            // Update the last tool_start event with the complete input
+            events.push({ type: 'tool_update', toolName: chunk.toolName, toolId: chunk.toolId, toolInput: chunk.toolInput });
+            sendSSE('tool_update', { toolName: chunk.toolName, toolId: chunk.toolId, toolInput: chunk.toolInput });
+            break;
           case 'tool_progress':
             events.push({ type: 'tool_progress', toolName: chunk.toolName, toolId: chunk.toolId, status: chunk.subtype });
             sendSSE('tool_progress', { toolName: chunk.toolName, toolId: chunk.toolId, status: chunk.subtype });
