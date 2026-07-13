@@ -58,12 +58,13 @@ export class AgentSdkService {
         maxTurns: 20,
         permissionMode: 'bypassPermissions',
         includePartialMessages: true,
-        sandbox: {
-          enabled: true,
-          failIfUnavailable: false,
-          filesystem: { allowWrite: [this.outputDir], allowRead: ['/tmp', this.outputDir] },
-          network: { allowedDomains: ['api.deepseek.com', 'api.anthropic.com'] },
-        },
+        // Sandbox requires `srt` binary: npm install -g @anthropic-ai/sandbox-runtime
+        // sandbox: {
+        //   enabled: true,
+        //   failIfUnavailable: false,
+        //   filesystem: { allowWrite: [this.outputDir], allowRead: ['/tmp', this.outputDir] },
+        //   network: { allowedDomains: ['api.deepseek.com', 'api.anthropic.com'] },
+        // },
         ...(resume ? { resume } : {}),
       },
     });
