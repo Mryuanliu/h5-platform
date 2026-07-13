@@ -129,6 +129,7 @@ export default function TaskPage() {
           role: m.role,
           content: m.content,
           thinkingChain: m.thinkingChain || undefined,
+          events: m.events ? (typeof m.events === 'string' ? JSON.parse(m.events) : m.events) : undefined,
         }));
         setInitialData({ msgs, convId: data.id, sdkSessionId: data.sdkSessionId || undefined });
         setLoading(false);

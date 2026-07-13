@@ -65,6 +65,16 @@ export class AgentSdkController {
       // ── 2. Run agent with resume support ──
       let fullContent = '';
       let fullThinking = '';
+      const events: any[] = []; // Accumulate events for DB persistence
+
+      // Helper: save events every N events to avoid losing on crash
+      let eventSaveCounter = 0;
+      const maybeSaveEvents = async () => {
+        eventSaveCounter++;
+        if (eventSaveCounter % 10 === 0) {
+          await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking, events);
+        }
+      };
 
       for await (const chunk of this.agentSdk.run(body.prompt, resumeSid)) {
         switch (chunk.type) {
@@ -76,33 +86,34 @@ export class AgentSdkController {
             break;
           case 'thinking':
             fullThinking += chunk.content || '';
+            events.push({ type: 'thinking', content: chunk.content });
             sendSSE('thinking', { content: chunk.content });
+            await maybeSaveEvents();
             break;
           case 'text':
             fullContent += chunk.content || '';
+            events.push({ type: 'text_chunk', content: chunk.content });
             sendSSE('text', { content: chunk.content });
+            await maybeSaveEvents();
             break;
           case 'tool_start':
-            sendSSE('tool_start', {
-              toolName: chunk.toolName,
-              toolId: chunk.toolId,
-              toolInput: chunk.toolInput,
-            });
-            break;
-          case 'tool_end':
-            sendSSE('tool_end', { toolName: chunk.toolName, toolId: chunk.toolId, toolResult: chunk.toolResult });
+            events.push({ type: 'tool_start', toolName: chunk.toolName, toolId: chunk.toolId, toolInput: chunk.toolInput });
+            sendSSE('tool_start', { toolName: chunk.toolName, toolId: chunk.toolId, toolInput: chunk.toolInput });
             break;
           case 'tool_progress':
+            events.push({ type: 'tool_progress', toolName: chunk.toolName, toolId: chunk.toolId, status: chunk.subtype });
             sendSSE('tool_progress', { toolName: chunk.toolName, toolId: chunk.toolId, status: chunk.subtype });
             break;
           case 'status':
+            events.push({ type: 'status', content: chunk.content, subtype: chunk.subtype });
             sendSSE('status', { content: chunk.content, subtype: chunk.subtype });
             break;
           case 'command_output':
+            events.push({ type: 'command_output', content: chunk.content });
             sendSSE('command_output', { content: chunk.content });
             break;
           case 'done':
-            await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking);
+            await this.conversation.updateMessage(assistantMsg.id, fullContent, fullThinking, events);
             sendSSE('done', { messageId: assistantMsg.id, usage: chunk.usage });
             break;
         }

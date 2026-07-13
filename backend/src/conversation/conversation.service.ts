@@ -57,11 +57,13 @@ export class ConversationService {
     role: 'user' | 'assistant',
     content: string,
     thinkingChain?: string,
+    events?: any[],
   ): Promise<Message> {
     const msg = this.msgRepo.create({
       role,
       content,
       thinkingChain,
+      events: events ? JSON.stringify(events) : undefined,
       conversationId,
     });
     const saved = await this.msgRepo.save(msg);
@@ -74,8 +76,20 @@ export class ConversationService {
     messageId: string,
     content: string,
     thinkingChain?: string,
+    events?: any[],
   ): Promise<void> {
-    await this.msgRepo.update(messageId, { content, thinkingChain });
+    const update: any = { content, thinkingChain };
+    if (events) update.events = JSON.stringify(events);
+    await this.msgRepo.update(messageId, update);
+  }
+
+  /** Append events to an existing message (streaming). */
+  async appendEvents(messageId: string, events: any[]): Promise<void> {
+    const msg = await this.msgRepo.findOne({ where: { id: messageId } });
+    if (!msg) return;
+    const existing = msg.events ? JSON.parse(msg.events) : [];
+    existing.push(...events);
+    await this.msgRepo.update(messageId, { events: JSON.stringify(existing) });
   }
 
   /** Get messages for a conversation. */

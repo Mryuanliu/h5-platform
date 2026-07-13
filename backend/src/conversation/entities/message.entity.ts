@@ -22,6 +22,10 @@ export class Message {
   @Column({ type: 'text', nullable: true })
   thinkingChain: string;
 
+  /** Chronological event log as JSON array */
+  @Column({ type: 'text', nullable: true })
+  events: string;
+
   @ManyToOne(() => Conversation, (conv) => conv.messages, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'conversationId' })
   conversation: Conversation;
