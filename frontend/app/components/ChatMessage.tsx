@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChatMessage as ChatMessageType, EventLog } from '../hooks/useChatSSE';
@@ -110,12 +110,7 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
       );
 
     case 'thinking':
-      return (
-        <div className="flex gap-2 text-xs text-purple-300/60 py-0.5 pl-2.5">
-          <span className="flex-shrink-0 mt-0.5">🧠</span>
-          <span className="italic truncate hover:line-clamp-none transition-all">{ev.content}</span>
-        </div>
-      );
+      return null; // Rendered as typewriter block via thinkingChain below
 
     case 'tool_update':
       return null; // Handled by updating tool_start's toolInput
@@ -130,9 +125,32 @@ function EventItem({ ev, isStreaming }: { ev: EventLog; isStreaming: boolean }) 
 
 export default function ChatMessage({ message, isLast }: Props) {
   const [showFullThinking, setShowFullThinking] = useState(false);
+  const [typewriterChars, setTypewriterChars] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isUser = message.role === 'user';
   const hasThinking = !!message.thinkingChain && message.thinkingChain.length > 0;
   const hasEvents = !!message.events && message.events.length > 0;
+
+  // Typewriter effect for thinkingChain: reveal chars one by one
+  const thinkingLen = message.thinkingChain?.length || 0;
+  useEffect(() => {
+    if (!isLast || !hasThinking) {
+      setTypewriterChars(thinkingLen);
+      return;
+    }
+    // When new text arrives, gradually increase displayed chars
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = setInterval(() => {
+      setTypewriterChars((prev) => {
+        if (prev >= thinkingLen) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          return thinkingLen;
+        }
+        return prev + 1;
+      });
+    }, 15); // ~15ms per char ≈ 66 chars/sec
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [thinkingLen, isLast, hasThinking]);
 
   // Count tool types for badges
   const toolCalls = (message.events || []).filter((e) => e.type === 'tool_start');
@@ -170,12 +188,14 @@ export default function ChatMessage({ message, isLast }: Props) {
               <span>🧠 思考过程</span>
               {isLast && <span className="inline-block w-1.5 h-3.5 bg-purple-400/60 ml-0.5 animate-pulse" />}
             </button>
-            <div className="text-xs text-purple-300/70 leading-relaxed pl-4 border-l-2 border-purple-500/20 font-light">
+            <div className="text-xs text-purple-300/70 leading-relaxed pl-4 border-l-2 border-purple-500/20 font-light whitespace-pre-wrap">
               {showFullThinking
                 ? message.thinkingChain
-                : message.thinkingChain.length > 200
-                  ? message.thinkingChain.slice(-200) + '…'
-                  : message.thinkingChain}
+                : isLast
+                  ? message.thinkingChain.slice(0, typewriterChars)
+                  : message.thinkingChain.length > 200
+                    ? message.thinkingChain.slice(-200) + '…'
+                    : message.thinkingChain}
             </div>
           </div>
         )}
