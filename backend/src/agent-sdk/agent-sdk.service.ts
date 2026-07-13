@@ -46,8 +46,10 @@ export class AgentSdkService {
             ANTHROPIC_API_KEY: 'test-key',
           },
           cwd: '/tmp',
-          tools: [],
-          maxTurns: 1,
+          // Enable all built-in tools: Grep, Read, Edit, Write, Bash, etc.
+          tools: { type: 'preset', preset: 'claude_code' },
+          // Allow multi-step agentic loops (tool calls → results → continue)
+          maxTurns: 20,
           permissionMode: 'bypassPermissions',
           includePartialMessages: true,
           ...(resumeSessionId ? { resume: resumeSessionId } : {}),

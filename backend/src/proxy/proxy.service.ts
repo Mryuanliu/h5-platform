@@ -10,6 +10,7 @@ interface AnthropicBlock {
   signature?: string;
   name?: string;
   input?: any;
+  id?: string;
   tool_use_id?: string;
   content?: any;
 }
@@ -70,6 +71,9 @@ export class ProxyService {
     let blockIdx = 0;
     let inThink = false;
     let inText = false;
+    // Tool call tracking: OAI tool_call_index → accumulated state
+    let pendingTools: Record<number, { id: string; name: string; args: string }> = {};
+    let inTool = false;
     let fullThink = '';
     let fullText = '';
 
@@ -90,6 +94,21 @@ export class ProxyService {
       if (req.stop_sequences?.length) body.stop = req.stop_sequences;
       if (req.top_p !== undefined) body.top_p = req.top_p;
       if (useThinking) body.extra_body = { thinking_mode: process.env.DEEPSEEK_THINKING_MODE || 'thinking' };
+
+      // ── Convert Anthropic tools → OpenAI functions ──
+      if (req.tools?.length) {
+        body.tools = req.tools.map((t: any) => ({
+          type: 'function',
+          function: {
+            name: t.name,
+            description: t.description || '',
+            parameters: t.input_schema || { type: 'object', properties: {} },
+          },
+        }));
+      }
+      if (req.tool_choice) {
+        body.tool_choice = this.mapToolChoice(req.tool_choice);
+      }
 
       // Use raw fetch to sidestep OpenAI SDK typing issues with extra_body
       const raw = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -176,14 +195,13 @@ export class ProxyService {
               sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
               blockIdx++;
               inThink = false;
-              // mock signature (Anthropic protocol expects this after thinking)
               const sig = `proxy:${Buffer.from(fullThink.slice(0, 32)).toString('base64').slice(0, 32)}`;
               sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'signature', signature: sig } });
               sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
               blockIdx++;
               sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
               inText = true;
-            } else if (!inText) {
+            } else if (!inText && !inTool) {
               sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
               inText = true;
             }
@@ -191,8 +209,57 @@ export class ProxyService {
             sse('content_block_delta', { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: delta.content } });
           }
 
+          // ── Tool calls (OpenAI tool_calls → Anthropic tool_use blocks) ──
+          const toolCalls = (delta as any).tool_calls;
+          if (toolCalls?.length) {
+            for (const tc of toolCalls) {
+              const idx = tc.index ?? 0;
+              if (tc.id) {
+                // New tool call — start a tool_use content block
+                if (inThink) {
+                  sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+                  blockIdx++; inThink = false;
+                  const sig = `proxy:${Buffer.from(fullThink.slice(0, 32)).toString('base64').slice(0, 32)}`;
+                  sse('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'signature', signature: sig } });
+                  sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+                  blockIdx++;
+                }
+                if (inText) {
+                  sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+                  inText = false; blockIdx++;
+                }
+                // Map call_xxx → toolu_xxx
+                const toolUseId = 'toolu_' + tc.id.replace('call_', '').slice(0, 24);
+                pendingTools[idx] = { id: toolUseId, name: tc.function?.name || '', args: '' };
+                sse('content_block_start', {
+                  type: 'content_block_start',
+                  index: blockIdx,
+                  content_block: { type: 'tool_use', id: toolUseId, name: tc.function?.name || '', input: {} },
+                });
+                inTool = true;
+              }
+              if (tc.function?.arguments) {
+                pendingTools[idx].args += tc.function.arguments;
+                if (inTool) {
+                  // Emit pending tool args as input_json_delta
+                  // For streaming, emit the delta chunks as they arrive
+                  sse('content_block_delta', {
+                    type: 'content_block_delta',
+                    index: blockIdx,
+                    delta: { type: 'input_json_delta', partial_json: tc.function.arguments },
+                  });
+                }
+              }
+            }
+          }
+
           // ── Finish ──
           if (finish) {
+            // Close open tool_use blocks
+            if (inTool) {
+              sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+              blockIdx++; inTool = false;
+            }
             if (inThink) {
               sse('content_block_stop', { type: 'content_block_stop', index: blockIdx });
               blockIdx++;
@@ -221,6 +288,7 @@ export class ProxyService {
 
       // Guard: close any dangling blocks if stream ended without proper events
       if (inThink) { sse('content_block_stop', { type: 'content_block_stop', index: blockIdx }); blockIdx++; }
+      if (inTool) { sse('content_block_stop', { type: 'content_block_stop', index: blockIdx }); blockIdx++; }
       if (inText) { sse('content_block_stop', { type: 'content_block_stop', index: blockIdx }); }
       res.end();
     } catch (err: any) {
@@ -253,6 +321,19 @@ export class ProxyService {
     if (req.top_p !== undefined) body.top_p = req.top_p;
     if (useThinking) body.extra_body = { thinking_mode: process.env.DEEPSEEK_THINKING_MODE || 'thinking' };
 
+    // ── Convert tools for non-streaming ──
+    if (req.tools?.length) {
+      body.tools = req.tools.map((t: any) => ({
+        type: 'function',
+        function: {
+          name: t.name,
+          description: t.description || '',
+          parameters: t.input_schema || { type: 'object', properties: {} },
+        },
+      }));
+    }
+    if (req.tool_choice) body.tool_choice = this.mapToolChoice(req.tool_choice);
+
     try {
       const raw = await fetch('https://api.deepseek.com/v1/chat/completions', {
         method: 'POST',
@@ -278,6 +359,17 @@ export class ProxyService {
       if (rc) {
         content.push({ type: 'thinking', thinking: rc });
         content.push({ type: 'signature', signature: `proxy:${Buffer.from(rc.slice(0, 32)).toString('base64').slice(0, 32)}` });
+      }
+      // Convert OpenAI tool_calls → Anthropic tool_use blocks
+      for (const tc of (msg.tool_calls || [])) {
+        let args: any = {};
+        try { args = JSON.parse(tc.function?.arguments || '{}'); } catch { args = {}; }
+        content.push({
+          type: 'tool_use',
+          id: 'toolu_' + (tc.id || '').replace('call_', '').slice(0, 24),
+          name: tc.function?.name || '',
+          input: args,
+        });
       }
       content.push({ type: 'text', text: msg.content || '' });
 
@@ -309,27 +401,78 @@ export class ProxyService {
       const txt = this.textOf(req.system);
       if (txt) out.push({ role: 'system', content: txt });
     }
+
+    // Track tool_call_id mapping: toolu_xxx → call_xxx
+    let toolCallIdCounter = 0;
+
     for (const m of req.messages) {
+      const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content;
+
       if (m.role === 'user') {
-        out.push({ role: 'user', content: this.textOf(m.content) || '' });
+        // Check if this is a tool_result message
+        const toolResults = blocks.filter((b) => b.type === 'tool_result');
+        const textBlocks = blocks.filter((b) => b.type === 'text');
+
+        if (toolResults.length > 0) {
+          // Each tool_result → separate 'tool' role message
+          for (const tr of toolResults) {
+            const trContent = typeof tr.content === 'string' ? tr.content
+              : (Array.isArray(tr.content) ? tr.content.map((c: any) => c.text || '').join('\n') : '');
+            // Map toolu_xxx to call_xxx
+            const callId = 'call_' + (tr.tool_use_id || '').replace('toolu_', '').slice(0, 24);
+            out.push({ role: 'tool', tool_call_id: callId, content: trContent });
+          }
+        } else {
+          // Regular user message
+          out.push({ role: 'user', content: this.textOf(m.content) || '' });
+        }
       } else {
-        const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content;
+        // Assistant message — can have text, thinking, and tool_use blocks
         let text = '';
         let rc = '';
+        const toolCalls: any[] = [];
+
         for (const b of blocks) {
           if (b.type === 'text' && b.text) text += b.text;
           else if (b.type === 'thinking' && b.thinking) rc += b.thinking;
-          else if (b.type === 'tool_use') text += `[tool_use: ${b.name} ${JSON.stringify(b.input)}]`;
+          else if (b.type === 'tool_use' && b.name) {
+            // Anthropic tool_use → OpenAI tool_call
+            toolCallIdCounter++;
+            const callId = 'call_' + (b.id || '').replace('toolu_', '').slice(0, 24) || `call_${toolCallIdCounter}`;
+            toolCalls.push({
+              id: callId,
+              type: 'function',
+              function: {
+                name: b.name,
+                arguments: JSON.stringify(b.input || {}),
+              },
+            });
+          }
         }
-        if (rc) {
-          // DeepSeek requires reasoning_content to be echoed back
-          out.push({ role: 'assistant', content: text, reasoning_content: rc });
+
+        if (toolCalls.length > 0) {
+          // OpenAI expects content: null when tool_calls are present
+          const msg: any = { role: 'assistant', content: text || null, tool_calls: toolCalls };
+          if (rc) msg.reasoning_content = rc;
+          out.push(msg);
+        } else if (rc) {
+          out.push({ role: 'assistant', content: text || ' ', reasoning_content: rc });
         } else {
           out.push({ role: 'assistant', content: text || ' ' });
         }
       }
     }
     return out;
+  }
+
+  /** Anthropic tool_choice → OpenAI tool_choice. */
+  private mapToolChoice(tc: any): any {
+    if (!tc || tc.type === 'auto') return 'auto';
+    if (tc.type === 'any' || tc.type === 'required') return 'required';
+    if (tc.type === 'tool' && tc.name) {
+      return { type: 'function', function: { name: tc.name } };
+    }
+    return 'auto';
   }
 
   /** Extract plain text from Anthropic content (string | block[]). */
